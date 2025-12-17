@@ -1,5 +1,5 @@
 {
-  "maintenance": true,
+  "maintenance": false,
   "reason": "System Update",
-  "allowOwner": false
+  "allowOwner": true
 }
