@@ -3026,15 +3026,15 @@ bot.on("callback_query", async (callbackQuery) => {
 ━━━━━━━━━━━━━━━━━━━
 <blockquote><b>⚉ 𝗕 𝗨 𝗚 ( 🦠 )</b></blockquote>
 ⦿ /xploiter
-  ☇ Crash Android ( 13% Risk of Getting Banned  )
+  ☇ Crash Android
 ⦿ /xtrash number
-  ☇ Spam Bug ( 45% Risk of Getting Banned )
+  ☇ Spam Bug
 ⦿ /delay1st number
-  ☇ Delay Invisible ( Safe No Risk )
+  ☇ Delay Invisible
 ⦿ /xvop number
-  ☇ Delay Hard ( 5% Risk of Getting Banned  )
+  ☇ Delay Hard 
 ⦿ /ioscrash number
-  ☇ Ios Crash ( 
+  ☇ Ios Crash 
 
 `;
       newButtons = [[{ text: "ʙᴀᴄᴋ ↺", callback_data: "mainmenu" }]];
