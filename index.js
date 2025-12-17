@@ -3032,7 +3032,7 @@ bot.on("callback_query", async (callbackQuery) => {
 ⦿ /delay1st number
   ☇ Delay Invisible
 ⦿ /xvop number
-  ☇ Delay Hard 
+  ☇ Delay Hard
 ⦿ /ioscrash number
   ☇ Ios Crash 
 
@@ -3050,6 +3050,10 @@ bot.on("callback_query", async (callbackQuery) => {
   ☇ Add Image
 » /setcd
   ☇ Set Cooldown Bug
+» /update
+  ☇ Update System From Server
+» /status
+  ☇ Check Server Status
 ━━━━━━━━━━━━━━━━━━━
 <blockquote><b>⚉ 𝗦 𝗘 𝗧 𝗧 𝗜 𝗡 𝗚 - 𝗠 𝗘 𝗡 𝗨 ( ⚙ )</b></blockquote>
 ⦿ /addprem - id duration
