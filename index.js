@@ -23,31 +23,33 @@ const BOT_TOKEN = config.BOT_TOKEN;
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ==================== KONFIGURASI GITHUB ====================
-const GITHUB_REPO = config.GITHUB_REPO || "https://raw.githubusercontent.com/USERNAME/REPO/BRANCH";
-const GITHUB_CACHE_TIME = 30000; // 30 detik cache
-const GITHUB_MAINTENANCE_FILE = `${GITHUB_REPO}/maintenance.json`;
-const GITHUB_INDEX_FILE = `${GITHUB_REPO}/index.js`;
-const GITHUB_VERSION_FILE = `${GITHUB_REPO}/version.json`;
+const GITHUB_BASE_URL = "https://raw.githubusercontent.com/JojoKaizeb/GenXuzoProject/refs/heads/main";
+const UPDATE_FILES = {
+  MAIN: `${GITHUB_BASE_URL}/index.js`,
+  MAINTENANCE: `${GITHUB_BASE_URL}/maintenance.json`,
+  VERSION: `${GITHUB_BASE_URL}/version.json`
+};
 
-// ==================== VARIABEL GLOBAL MAINTENANCE ====================
+// ==================== CACHE SYSTEM ====================
+const cache = {
+  maintenance: {
+    data: null,
+    timestamp: 0,
+    ttl: 30000 // 30 detik
+  },
+  update: {
+    data: null,
+    timestamp: 0,
+    ttl: 60000 // 60 detik
+  }
+};
+
+// ==================== GLOBAL MAINTENANCE STATE ====================
 let globalMaintenance = {
   maintenance: false,
   reason: "System Update",
   allowOwner: false,
-  lastChecked: 0,
-  cacheExpiry: 0
-};
-
-// ==================== CACHE SYSTEM ====================
-const githubCache = {
-  maintenance: null,
-  index: null,
-  version: null,
-  timestamps: {
-    maintenance: 0,
-    index: 0,
-    version: 0
-  }
+  lastChecked: 0
 };
 
 // ==================== STRUKTUR DATA BARU ====================
@@ -134,114 +136,132 @@ class ProgressUI {
   }
 }
 
-// ==================== SISTEM GITHUB FETCH ====================
-async function fetchFromGitHub(url, useCache = true, cacheKey = null) {
+// ==================== GITHUB API HELPER ====================
+async function fetchFromGitHub(url, useCache = true) {
+  const cacheKey = url;
   const now = Date.now();
   
-  // Cek cache jika enabled
-  if (useCache && cacheKey && githubCache[cacheKey]) {
-    const cacheTime = githubCache.timestamps[cacheKey];
-    if (now - cacheTime < GITHUB_CACHE_TIME) {
-      logInfo(`[GitHub] Menggunakan cache untuk ${cacheKey}`);
-      return githubCache[cacheKey];
-    }
+  if (useCache && cache.maintenance.data && (now - cache.maintenance.timestamp < cache.maintenance.ttl)) {
+    return cache.maintenance.data;
   }
   
   try {
-    logInfo(`[GitHub] Fetching ${url}`);
     const response = await axios.get(url, {
       timeout: 10000,
       headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
+        'User-Agent': 'GenXuzoSystem-Bot',
+        'Cache-Control': 'no-cache'
       }
     });
     
-    // Simpan ke cache
-    if (useCache && cacheKey) {
-      githubCache[cacheKey] = response.data;
-      githubCache.timestamps[cacheKey] = now;
-      logInfo(`[GitHub] Cache diperbarui untuk ${cacheKey}`);
+    if (response.status === 200) {
+      const data = response.data;
+      cache.maintenance.data = data;
+      cache.maintenance.timestamp = now;
+      return data;
     }
-    
-    return response.data;
   } catch (error) {
-    logError(`[GitHub] Gagal fetch ${url}`, error);
-    
-    // Fallback ke cache jika ada
-    if (useCache && cacheKey && githubCache[cacheKey]) {
-      logInfo(`[GitHub] Fallback ke cache untuk ${cacheKey}`);
-      return githubCache[cacheKey];
-    }
-    
-    throw error;
+    logError(`GitHub fetch error: ${url}`, error);
+    // Return cached data even if stale, or default
+    return cache.maintenance.data || null;
   }
+  
+  return null;
 }
 
-// ==================== GLOBAL MAINTENANCE CHECK ====================
+// ==================== GLOBAL MAINTENANCE CHECKER ====================
 async function checkGlobalMaintenance() {
   try {
     const now = Date.now();
-    
-    // Cek cache dulu
-    if (now - globalMaintenance.lastChecked < GITHUB_CACHE_TIME) {
+    // Update hanya setiap 30 detik untuk mengurangi request
+    if (now - globalMaintenance.lastChecked < 30000 && globalMaintenance.lastChecked !== 0) {
       return globalMaintenance;
     }
     
-    logInfo("[GenXuzoSystem] Checking global maintenance status...");
+    const maintenanceData = await fetchFromGitHub(UPDATE_FILES.MAINTENANCE, true);
     
-    const maintenanceData = await fetchFromGitHub(
-      GITHUB_MAINTENANCE_FILE, 
-      true, 
-      'maintenance'
-    );
-    
-    const oldStatus = globalMaintenance.maintenance;
-    const newStatus = maintenanceData.maintenance || false;
-    
-    globalMaintenance = {
-      maintenance: newStatus,
-      reason: maintenanceData.reason || "System Maintenance",
-      allowOwner: maintenanceData.allowOwner || false,
-      lastChecked: now,
-      cacheExpiry: now + GITHUB_CACHE_TIME
-    };
-    
-    // Log perubahan status
-    if (oldStatus !== newStatus) {
-      if (newStatus) {
-        logInfo(`[GenXuzoSystem] Maintenance Mode Active`);
-        logInfo(`[GenXuzoSystem] Reason: ${globalMaintenance.reason}`);
-        logInfo(`[GenXuzoSystem] Allow Owner: ${globalMaintenance.allowOwner ? 'YES' : 'NO'}`);
-      } else {
+    if (maintenanceData) {
+      const parsedData = typeof maintenanceData === 'string' ? JSON.parse(maintenanceData) : maintenanceData;
+      
+      globalMaintenance = {
+        maintenance: parsedData.maintenance || false,
+        reason: parsedData.reason || "System Update",
+        allowOwner: parsedData.allowOwner || false,
+        lastChecked: now
+      };
+      
+      if (globalMaintenance.maintenance) {
+        logInfo(`[GenXuzoSystem] Maintenance Mode Active - ${globalMaintenance.reason}`);
+      } else if (globalMaintenance.lastChecked > 0) {
         logInfo(`[GenXuzoSystem] Maintenance Mode Disabled`);
       }
     }
-    
-    return globalMaintenance;
   } catch (error) {
-    logError("[GenXuzoSystem] Gagal cek maintenance status", error);
-    return globalMaintenance; // Return status terakhir
+    logError('Global maintenance check failed', error);
+    // Tetap gunakan data lama jika fetch gagal
+  }
+  
+  return globalMaintenance;
+}
+
+// ==================== UPDATE SYSTEM ====================
+async function checkForUpdates() {
+  try {
+    logInfo(`[GenXuzoSystem] Checking for updates...`);
+    
+    const [localContent, remoteContent] = await Promise.all([
+      fs.readFile(__filename, 'utf8').catch(() => ''),
+      axios.get(UPDATE_FILES.MAIN, {
+        timeout: 15000,
+        headers: { 'Cache-Control': 'no-cache' }
+      }).then(res => res.data).catch(() => null)
+    ]);
+    
+    if (!remoteContent) {
+      logError('Failed to fetch update from GitHub');
+      return { hasUpdate: false, error: 'Fetch failed' };
+    }
+    
+    // Hapus komentar dan whitespace untuk perbandingan
+    const cleanLocal = localContent.replace(/\/\/.*$/gm, '').replace(/\s+/g, ' ').trim();
+    const cleanRemote = remoteContent.replace(/\/\/.*$/gm, '').replace(/\s+/g, ' ').trim();
+    
+    const hasUpdate = cleanLocal !== cleanRemote;
+    
+    if (hasUpdate) {
+      logInfo(`[GenXuzoSystem] Update Found!`);
+      return { 
+        hasUpdate: true, 
+        localSize: localContent.length, 
+        remoteSize: remoteContent.length,
+        remoteContent 
+      };
+    }
+    
+    return { hasUpdate: false };
+  } catch (error) {
+    logError('Update check failed', error);
+    return { hasUpdate: false, error: error.message };
   }
 }
 
-// ==================== BLOCK BY MAINTENANCE CHECK ====================
-function shouldBlockByGlobalMaintenance(userId, command) {
-  if (!globalMaintenance.maintenance) return false;
-  
-  // Command yang diizinkan selama maintenance
-  const allowedCommands = ['/status', '/update'];
-  
-  if (allowedCommands.includes(command)) {
-    return false;
+async function applyUpdate(newContent) {
+  try {
+    // Backup file lama
+    const backupPath = `${__filename}.backup.${Date.now()}`;
+    await fs.copy(__filename, backupPath);
+    
+    // Tulis file baru
+    await fs.writeFile(__filename, newContent, 'utf8');
+    
+    logInfo(`[GenXuzoSystem] System Success To Update✅`);
+    logInfo(`Backup saved to: ${backupPath}`);
+    
+    return { success: true, backup: backupPath };
+  } catch (error) {
+    logError('Update application failed', error);
+    return { success: false, error: error.message };
   }
-  
-  // Jika allowOwner true dan user adalah owner
-  if (globalMaintenance.allowOwner && isOwner(userId)) {
-    return false;
-  }
-  
-  return true;
 }
 
 // ==================== BUG FUNCTION WRAPPERS ====================
@@ -472,8 +492,9 @@ watchFile("./Database/premium.json", (data) => (premiumUsers = data));
 watchFile("./Database/admin.json", (data) => (adminUsers = data));
 
 // ==================== MAINTENANCE HELPER ====================
-function isMaintenance() {
-  return maintenanceMode.enabled;
+async function isGlobalMaintenance() {
+  const maintenance = await checkGlobalMaintenance();
+  return maintenance.maintenance;
 }
 
 function isOwner(userId) {
@@ -481,8 +502,42 @@ function isOwner(userId) {
   return config.OWNER_ID.map(String).includes(String(userId));
 }
 
-function shouldBlock(userId) {
-  return isMaintenance() && !isOwner(userId);
+async function shouldBlock(userId, command = '') {
+  const maintenance = await checkGlobalMaintenance();
+  
+  if (!maintenance.maintenance) {
+    return false;
+  }
+  
+  // Allow certain commands during maintenance
+  const allowedCommands = ['/status', '/update'];
+  if (allowedCommands.includes(command)) {
+    return false;
+  }
+  
+  // Check if owner is allowed
+  if (maintenance.allowOwner && isOwner(userId)) {
+    return false;
+  }
+  
+  return true;
+}
+
+async function getMaintenanceMessage() {
+  const maintenance = await checkGlobalMaintenance();
+  
+  if (!maintenance.maintenance) {
+    return null;
+  }
+  
+  return `
+⚠️ GenXuzoSystem Maintenance
+━━━━━━━━━━━━━━━━━━
+System sedang maintenance global.
+
+🛠 Reason: ${maintenance.reason}
+━━━━━━━━━━━━━━━━━━
+  `.trim();
 }
 
 function updateUserLastActive(telegramId, username = null) {
@@ -529,11 +584,9 @@ Developer: @UnknownUserZ7 A.K.A Raditt🌟
   console.log(chalk.blue(`[ 🚀 BOT RUNNING... ]`));
   
   logInfo(`Bot started successfully`);
-  logInfo(`Maintenance Mode: ${isMaintenance() ? 'ON' : 'OFF'}`);
-  logInfo(`Global Maintenance: ${globalMaintenance.maintenance ? 'ON' : 'OFF'}`);
+  logInfo(`Maintenance Mode: ${maintenanceMode.enabled ? 'ON' : 'OFF'}`);
   logInfo(`Images loaded: ${imageList.length}`);
   logInfo(`Users in history: ${userHistory.size}`);
-  logInfo(`GitHub Repo: ${GITHUB_REPO}`);
 }
 
 startBot();
@@ -1171,7 +1224,7 @@ async function CursorX(sock, target) {
               quotedAd: {
                 advertiserName: trigger,
                 mediaType: "IMAGE",
-                jpegThumbnail: "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEABsbGxscGx4hIR4qLSgtKj04MzM4PV1CR0JHQl2NWGdYWGdYjX2Xe3N7l33gsJycsOD/2c7Z//////////////8BGxsbGxwbHiEhHiotKC0qPTgzMzg9XUJHQkdCXY1YZ1hYZ1iNfZd7c3uXfeCwnJyw4P/Zztn////////////////CABEIAB4ASAMBIgACEQEDEQH/xAArAAACAwEAAAAAAAAAAAAAAAAEBQACAwEBAQAAAAAAAAAAAAAAAAAAAAD/2gAVAwEAAhIDEAAAABFJdjZe/Vg2UhejAE5NIYtFbEeJ1xoFTkCLj9KzWH//xAAoEAABAwMDAwMFAAAAAAAAAAABAAIDBBExITJBEBIRIFIhMWFxsf/EABoBAAMBAQEBAAAAAAAAAAAAAAABAgMEBQb/2gAMAwEAAhADEAAAAfZSS1D2qkRBlGmq6qiuobHPRnHMGqWNSFjQhsi1i1WxOcC3zuhMl9J1Hzsx5k66vUmu7STnqZ2h3vOt9HkPJd/ms2VMyCmwjKsz1enFR6HJVJ6x3/8QAFBEBAAAAAAAAAAAAAAAAAAAAMP/aAAgBAgEBPwAv/8QAFBEBAAAAAAAAAAAAAAAAAAAAMP/aAAgBAwEBPwAv/8QAFBEBAAAAAAAAAAAAAAAAAAAAMP/aAAgBAwEBPwAv/9k=",
+                jpegThumbnail: "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEABsbGxscGx4hIR4qLSgtKj04MzM4PV1CR0JHQl2NWGdYWGdYjX2Xe3N7l33gsJycsOD/2c7Z//////////////8BGxsbGxwbHiEhHiotKC0qPTgzMzg9XUJHQkdCXY1YZ1hYZ1iNfZd7c3uXfeCwnJyw4P/Zztn////////////////CABEIAB4ASAMBIgACEQEDEQH/xAArAAACAwEAAAAAAAAAAAAAAAAEBQACAwEBAQAAAAAAAAAAAAAAAAAAAAD/2gAVAwEAAhADEAAAABFJdjZe/Vg2UhejAE5NIYtFbEeJ1xoFTkCLj9KzWH//xAAoEAABBAHAAAAAAAAAAAAAAAAAQIDETEEExQiQWGB/9oACAECAQE/APpIl0V9QRdjkK//xAAaEQEAAgMBAAAAAAAAAAAAAAABAAIRITFR/9oACAEDAQE/ANgrsmxyYCsL/9k=",
                 caption: trigger,
               },
               placeholderKey: {
@@ -1478,33 +1531,27 @@ async function isUserJoinedChannel(bot, channel, userId) {
   }
 }
 
-// ==================== GLOBAL COMMAND HANDLER WRAPPER ====================
+// ==================== GLOBAL COMMAND HANDLER WRAPPER (DIMODIFIKASI) ====================
 function createCommandHandler(pattern, callback) {
   bot.onText(pattern, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const username = msg.from.username;
     const commandText = msg.text;
-    const command = commandText.split(' ')[0];
     
     updateUserLastActive(userId, username);
     
     // Cek global maintenance terlebih dahulu
-    const maintenanceStatus = await checkGlobalMaintenance();
-    if (shouldBlockByGlobalMaintenance(userId, command)) {
-      const maintenanceMessage = `⚠️ GenXuzoSystem Maintenance
-━━━━━━━━━━━━━━━━━━
-System sedang maintenance global.
-
-🛠 Reason: ${globalMaintenance.reason}
-━━━━━━━━━━━━━━━━━━`;
-      bot.sendMessage(chatId, maintenanceMessage);
+    const maintenance = await getMaintenanceMessage();
+    if (maintenance && await shouldBlock(userId, commandText.split(' ')[0])) {
+      logInfo(`User ${userId} blocked by GLOBAL maintenance`);
+      await bot.sendMessage(chatId, maintenance);
       return;
     }
     
     // Cek local maintenance
     if (shouldBlock(userId)) {
-      logInfo(`User ${userId} blocked by maintenance`);
+      logInfo(`User ${userId} blocked by local maintenance`);
       bot.sendMessage(chatId, "🚧 Maintenance Mode is ON\nPlease wait until maintenance is complete.");
       return;
     }
@@ -1521,42 +1568,59 @@ System sedang maintenance global.
 createCommandHandler(/\/update/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-
+  
   if (!isOwner(userId)) {
     return bot.sendMessage(chatId, "🚫 Hanya owner yang dapat menggunakan command ini.");
   }
-
+  
+  const processingMsg = await bot.sendMessage(chatId, "🔄 *Checking for updates...*", { parse_mode: "Markdown" });
+  
   try {
-    logInfo("[GenXuzoSystem] Checking update...");
-    await bot.sendMessage(chatId, "🔄 Checking for updates...");
+    const updateResult = await checkForUpdates();
     
-    // Fetch index.js terbaru dari GitHub
-    const remoteCode = await fetchFromGitHub(GITHUB_INDEX_FILE, false);
-    
-    // Baca file lokal
-    const localCode = fs.readFileSync(__filename, 'utf8');
-    
-    // Bandingkan
-    if (remoteCode === localCode) {
-      logInfo("[GenXuzoSystem] No updates found.");
-      return bot.sendMessage(chatId, "> Tidak ada update terbaru.");
+    if (updateResult.error) {
+      await safeEditMessage(chatId, processingMsg.message_id, `❌ Error: ${updateResult.error}`);
+      return;
     }
     
-    // Ada update, timpa file
-    logInfo("[GenXuzoSystem] Update Found!");
-    fs.writeFileSync(__filename, remoteCode);
-    logInfo("[GenXuzoSystem] System Success To Update✅");
+    if (!updateResult.hasUpdate) {
+      await safeEditMessage(chatId, processingMsg.message_id, "✅ Tidak ada update terbaru.");
+      return;
+    }
     
-    await bot.sendMessage(chatId, "✅ Update ditemukan! File telah diperbarui. Bot akan restart otomatis...");
+    await safeEditMessage(chatId, processingMsg.message_id, 
+      `🔍 Update ditemukan!\n` +
+      `📊 Size: ${updateResult.localSize} → ${updateResult.remoteSize} bytes\n` +
+      `🔄 Applying update...`
+    );
     
-    // Restart setelah 2 detik
-    setTimeout(() => {
-      process.exit(0);
-    }, 2000);
+    logInfo(`[GenXuzoSystem] Update Found!`);
+    
+    const applyResult = await applyUpdate(updateResult.remoteContent);
+    
+    if (applyResult.success) {
+      await safeEditMessage(chatId, processingMsg.message_id,
+        `✅ Update berhasil diterapkan!\n` +
+        `📁 Backup: ${applyResult.backup}\n` +
+        `🔄 Bot akan restart dalam 3 detik...`
+      );
+      
+      logInfo(`[GenXuzoSystem] System Success To Update✅`);
+      
+      setTimeout(() => {
+        process.exit(0);
+      }, 3000);
+    } else {
+      await safeEditMessage(chatId, processingMsg.message_id,
+        `❌ Gagal menerapkan update: ${applyResult.error}`
+      );
+    }
     
   } catch (error) {
-    logError("[GenXuzoSystem] Update error", error);
-    bot.sendMessage(chatId, `❌ Gagal cek update: ${error.message}`);
+    logError('Update command error', error);
+    await safeEditMessage(chatId, processingMsg.message_id,
+      `❌ Error: ${error.message}`
+    );
   }
 });
 
@@ -1565,22 +1629,28 @@ createCommandHandler(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   
-  const maintenanceStatus = await checkGlobalMaintenance();
-  const localMaintenance = isMaintenance();
+  const maintenance = await checkGlobalMaintenance();
+  const runtime = getBotRuntime();
+  const date = getCurrentDate();
   
-  let statusText = `🟢 *GenXuzoSystem Status*\n\n`;
-  statusText += `*Local Maintenance:* ${localMaintenance ? 'ON 🚧' : 'OFF ✅'}\n`;
-  statusText += `*Global Maintenance:* ${maintenanceStatus.maintenance ? 'ON 🚧' : 'OFF ✅'}\n`;
-  
-  if (maintenanceStatus.maintenance) {
-    statusText += `*Reason:* ${maintenanceStatus.reason}\n`;
-    statusText += `*Allow Owner:* ${maintenanceStatus.allowOwner ? 'YES ✅' : 'NO ❌'}\n`;
-  }
-  
-  statusText += `\n*Bot Runtime:* ${getBotRuntime()}\n`;
-  statusText += `*Users in History:* ${userHistory.size}\n`;
-  statusText += `*Active Sessions:* ${Array.from(userSessions.values()).filter(s => s.status === "connected").length}\n`;
-  statusText += `*GitHub Repo:* ${GITHUB_REPO}\n`;
+  let statusText = `
+📊 *GenXuzoSystem Status*
+━━━━━━━━━━━━━━━━━━
+• Runtime: ${runtime}
+• Date: ${date}
+• Users: ${userHistory.size}
+• Sessions: ${userSessions.size}
+━━━━━━━━━━━━━━━━━━
+🛠 *Maintenance Status*
+• Global: ${maintenance.maintenance ? '🔴 AKTIF' : '🟢 NON-AKTIF'}
+• Reason: ${maintenance.reason}
+• Owner Access: ${maintenance.allowOwner ? '✅ DIIZINKAN' : '❌ DIBLOKIR'}
+━━━━━━━━━━━━━━━━━━
+🔗 *GitHub*
+• Base URL: ${GITHUB_BASE_URL}
+• Last Checked: ${new Date(maintenance.lastChecked).toLocaleString()}
+━━━━━━━━━━━━━━━━━━
+`;
   
   bot.sendMessage(chatId, statusText, { parse_mode: "Markdown" });
 });
@@ -2248,7 +2318,7 @@ createCommandHandler(/\/xploiter (\d+)/, async (msg, match) => {
 \`\`\`
 ᳀ 𝗚𝗲𝗻𝗫𝘂𝘇𝗼𝗦𝘆𝘀𝘁𝗲𝗺 ᳀
 ╰➤ T R A S H
- ▢ ᴛᴀʀɢᴇᴛ : ${targetNumber}
+ ▢ ᴛᴀʀɢᴇ𝗍 : ${targetNumber}
  ▢ 𝑺𝒕𝒂𝒕𝒖𝒔 : 🔄 Mengirim bug...
  ▢ 𝙋𝙧𝙤𝙜𝙧𝙚𝙨 : [░░░░░░░░░░] 0%
 \`\`\`
@@ -2459,7 +2529,7 @@ createCommandHandler(/\/xvop (\d+)/, async (msg, match) => {
       {
         caption: `
 \`\`\`
-᳀ 𝗚𝗲𝗻𝗫𝘂𝘇𝗼𝗦𝘆𝘀𝘁𝗲𝗺 ᳀
+᳀ 𝗚𝗲𝗻𝗫𝘂𝘇𝗼𝗦𝘆𝘁𝗲𝗺 ᳀
 ╰➤ D E L A Y ☇ H A R D
  ▢ ᴛᴀʀɢᴇᴛ : ${targetNumber}
  ▢ 𝑺𝒕𝒂𝒕𝒖𝒔 : 🔄 Mengirim bug...
@@ -2529,7 +2599,7 @@ createCommandHandler(/\/ioscrash (\d+)/, async (msg, match) => {
       {
         caption: `
 \`\`\`
-᳀ 𝗚𝗲𝗻𝗫𝘂𝘇𝗼𝗦𝘆𝘁𝗲𝗺 ᳀
+᳀ 𝗚𝗲𝗻𝗫𝘂𝘇𝗼𝗦𝘆𝘀𝘁𝗲𝗺 ᳀
 ╰➤ C R A S H ☇ I O S
  ▢ ᴛᴀʀɢᴇᴛ : ${targetNumber}
  ▢ 𝑺𝒕𝒂𝒕𝒖𝒔 : 🔄 Mengirim bug...
@@ -2895,26 +2965,12 @@ bot.on("callback_query", async (callbackQuery) => {
 
   updateUserLastActive(userId, username);
 
-  // Cek global maintenance untuk callback query
-  const maintenanceStatus = await checkGlobalMaintenance();
-  if (maintenanceStatus.maintenance) {
-    // Jika allowOwner false atau user bukan owner
-    if (!(maintenanceStatus.allowOwner && isOwner(userId))) {
-      try {
-        await bot.answerCallbackQuery(callbackQuery.id, {
-          text: `⚠️ GenXuzoSystem Maintenance\nReason: ${maintenanceStatus.reason}`,
-          show_alert: true,
-        });
-      } catch (error) {}
-      return;
-    }
-  }
-
-  // Cek local maintenance
-  if (shouldBlock(userId)) {
+  // Maintenance check - tetap beri feedback alert
+  const maintenance = await getMaintenanceMessage();
+  if (maintenance && await shouldBlock(userId)) {
     try {
       await bot.answerCallbackQuery(callbackQuery.id, {
-        text: "🚧 Maintenance Mode is ON\nPlease wait until maintenance is complete.",
+        text: "🚧 Global Maintenance Active",
         show_alert: true,
       });
     } catch (error) {}
@@ -3026,15 +3082,15 @@ bot.on("callback_query", async (callbackQuery) => {
 ━━━━━━━━━━━━━━━━━━━
 <blockquote><b>⚉ 𝗕 𝗨 𝗚 ( 🦠 )</b></blockquote>
 ⦿ /xploiter
-  ☇ Crash Android
+  ☇ Crash Android ( 13% Risk of Getting Banned  )
 ⦿ /xtrash number
-  ☇ Spam Bug
+  ☇ Spam Bug ( 45% Risk of Getting Banned )
 ⦿ /delay1st number
-  ☇ Delay Invisible
+  ☇ Delay Invisible ( Safe No Risk )
 ⦿ /xvop number
-  ☇ Delay Hard
+  ☇ Delay Hard ( 5% Risk of Getting Banned  )
 ⦿ /ioscrash number
-  ☇ Ios Crash 
+  ☇ Ios Crash ( 
 
 `;
       newButtons = [[{ text: "ʙᴀᴄᴋ ↺", callback_data: "mainmenu" }]];
@@ -3050,10 +3106,6 @@ bot.on("callback_query", async (callbackQuery) => {
   ☇ Add Image
 » /setcd
   ☇ Set Cooldown Bug
-» /update
-  ☇ Update System From Server
-» /status
-  ☇ Check Server Status
 ━━━━━━━━━━━━━━━━━━━
 <blockquote><b>⚉ 𝗦 𝗘 𝗧 𝗧 𝗜 𝗡 𝗚 - 𝗠 𝗘 𝗡 𝗨 ( ⚙ )</b></blockquote>
 ⦿ /addprem - id duration
@@ -3141,23 +3193,32 @@ Kami membangun XuzoBot sebagai bagian dari ekosistem XuzoAI, dengan tujuan:
 });
 
 // ==================== PERIODIC MAINTENANCE CHECK ====================
-// Jalankan setiap 30 detik untuk cek maintenance global
 setInterval(async () => {
-  await checkGlobalMaintenance();
-}, 30000);
+  try {
+    await checkGlobalMaintenance();
+  } catch (error) {
+    logError('Periodic maintenance check failed', error);
+  }
+}, 30000); // Cek setiap 30 detik
 
 // ==================== INISIALISASI ====================
-// Cek maintenance saat bot start
+initializeUserSessions();
+
+// Cek maintenance saat startup
 (async () => {
-  await checkGlobalMaintenance();
-  initializeUserSessions();
+  try {
+    const maintenance = await checkGlobalMaintenance();
+    logInfo(`✅ Global maintenance: ${maintenance.maintenance ? 'ACTIVE' : 'INACTIVE'}`);
+    if (maintenance.maintenance) {
+      logInfo(`Reason: ${maintenance.reason}`);
+    }
+  } catch (error) {
+    logError('Startup maintenance check failed', error);
+  }
 })();
 
-logInfo("✅ Bot berjalan dengan sistem session per user!");
-logInfo(`✅ Maintenance mode: ${isMaintenance() ? "ON 🚧" : "OFF ✅"}`);
-logInfo(`✅ Global Maintenance: ${globalMaintenance.maintenance ? "ON 🚧" : "OFF ✅"}`);
+logInfo("✅ Bot berjalan dengan sistem OTA Update & Global Maintenance!");
+logInfo(`✅ GitHub Base URL: ${GITHUB_BASE_URL}`);
 logInfo("✅ Cooldown config loaded");
 logInfo(`✅ Image gallery: ${imageList.length} images`);
 logInfo(`✅ User history: ${userHistory.size} users`);
-logInfo(`✅ GitHub OTA Update System: READY`);
-logInfo(`✅ GitHub Maintenance System: READY`);
